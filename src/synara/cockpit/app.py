@@ -52,8 +52,15 @@ st.set_page_config(page_title="Synara — Stockout Decision Engine", layout="wid
 st.markdown(
     """
     <style>
-    .metric-note { color: #6b7280; font-size: 0.85rem; }
-    .stMetric { background: #0f172a; padding: 0.6rem 0.8rem; border-radius: 8px; }
+    .metric-note { color: #334155; font-size: 0.95rem; line-height: 1.45; }
+    div[data-testid="stMetric"] {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      padding: 0.85rem 1rem;
+      border-radius: 10px;
+    }
+    div[data-testid="stMetric"] label { color: #475569 !important; }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #0f172a !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -70,7 +77,7 @@ with st.sidebar:
     demand = st.slider("Demand multiplier", 0.8, 2.0, 1.0, 0.05)
     lead_delta = st.slider("Lead time delta (days)", -2, 10, 0, 1)
     st.caption("Applies to the simulation only until you place a real PO.")
-    if st.button("Load / reset synthetic world", use_container_width=True):
+    if st.button("Load / reset synthetic world", width="stretch"):
         try:
             info = seed()
             fetch_alerts.clear()
@@ -131,7 +138,7 @@ with tab_warn:
         show["hours_to_stockout"] = show["hours_to_stockout"].map(
             lambda x: None if x is None else round(float(x), 1)
         )
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width="stretch", hide_index=True)
 
         st.subheader("Place emergency purchase order")
         col_a, col_b, col_c = st.columns([2, 1, 1])
@@ -155,7 +162,7 @@ with tab_warn:
     ops = payload.get("operational_alerts") or []
     if ops:
         st.subheader("Operational ROP crossings (from outbox → DuckDB)")
-        st.dataframe(pd.DataFrame(ops), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(ops), width="stretch", hide_index=True)
 
 with tab_scene:
     st.write(
@@ -186,7 +193,7 @@ with tab_scene:
             pd.DataFrame(extra)[
                 ["sku", "name", "hours_to_stockout", "at_risk_margin_usd", "lead_time_days"]
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
