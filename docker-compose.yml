@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: synara
+      POSTGRES_PASSWORD: synara
+      POSTGRES_DB: synara
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synara"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - synara_pg:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn synara.api.app:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg://synara:synara@postgres:5432/synara
+      DUCKDB_PATH: /data/synara.duckdb
+      API_KEY: ${API_KEY:-dev-synara-key}
+    ports:
+      - "8000:8000"
+    volumes:
+      - synara_duck:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m synara.infrastructure.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://synara:synara@postgres:5432/synara
+      DUCKDB_PATH: /data/synara.duckdb
+      WORKER_ID: worker-1
+    volumes:
+      - synara_duck:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  cockpit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: streamlit run src/synara/cockpit/app.py --server.port=8501 --server.address=0.0.0.0
+    environment:
+      API_BASE_URL: http://api:8000
+      API_KEY: ${API_KEY:-dev-synara-key}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+volumes:
+  synara_pg:
+  synara_duck:
