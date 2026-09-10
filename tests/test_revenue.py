@@ -23,9 +23,12 @@ def test_shortfall_uses_margin_not_only_price():
     )
     assert split.at_risk_gross_usd == pytest.approx(2000)
     assert split.at_risk_margin_usd == pytest.approx(500)
-    assert split.po_arrives_after_horizon is True
-    assert split.recoverable_margin_usd == pytest.approx(0)
-    assert split.unrecoverable_margin_usd == pytest.approx(500)
+    assert split.po_arrives_after_horizon is True  # standard 7-day LT misses 48h
+    assert split.recoverable_margin_usd > 0  # 24h expedite still saves the tail
+    assert split.unrecoverable_margin_usd > 0
+    assert split.recoverable_margin_usd + split.unrecoverable_margin_usd == pytest.approx(
+        split.at_risk_margin_usd
+    )
 
 
 def test_expedite_inside_horizon_recovers_tail():

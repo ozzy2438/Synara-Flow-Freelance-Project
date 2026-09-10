@@ -101,6 +101,7 @@ def split_revenue(
     inbound_by_hour: dict[int, float] | None = None,
     demand_multiplier: float = 1.0,
     lead_time_override_days: int | None = None,
+    expedite_hours: int = 24,
 ) -> RevenueSplit:
     lead = lead_time_override_days if lead_time_override_days is not None else lead_time_days
     lead = max(0, lead)
@@ -111,14 +112,12 @@ def split_revenue(
     po_qty = recommended_po_quantity(
         daily_velocity, lead, safety_stock, on_hand, on_order, demand_multiplier
     )
-    arrival_hour = int(round(lead * 24))
+    standard_arrival_hour = int(round(lead * 24))
+    arrival_hour = max(1, int(expedite_hours))
     with_po_inbound = dict(inbound)
-    po_after_horizon = arrival_hour > horizon_hours or po_qty == 0
-    if po_qty > 0 and arrival_hour <= horizon_hours:
-        with_po_inbound[arrival_hour] = with_po_inbound.get(arrival_hour, 0.0) + po_qty
-    elif po_qty > 0 and arrival_hour == 0:
-        with_po_inbound[1] = with_po_inbound.get(1, 0.0) + po_qty
-        po_after_horizon = False
+    if po_qty > 0:
+        hour = min(arrival_hour, horizon_hours)
+        with_po_inbound[hour] = with_po_inbound.get(hour, 0.0) + po_qty
 
     with_po = walk_horizon(
         on_hand, daily_velocity, horizon_hours, with_po_inbound, demand_multiplier
@@ -128,6 +127,7 @@ def split_revenue(
     recoverable_units = max(0.0, without_po.lost_units - with_po.lost_units)
     unrecoverable_units = with_po.lost_units
     unit_margin = unit_price * margin_rate
+    standard_misses_horizon = standard_arrival_hour > horizon_hours and shortfall > 0
 
     return RevenueSplit(
         sku=sku,
@@ -139,5 +139,5 @@ def split_revenue(
         hours_to_stockout=without_po.hours_to_stockout,
         lead_time_days=lead,
         recommended_po_qty=po_qty,
-        po_arrives_after_horizon=po_after_horizon and shortfall > 0,
+        po_arrives_after_horizon=standard_misses_horizon,
     )

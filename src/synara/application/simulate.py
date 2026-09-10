@@ -152,10 +152,11 @@ def run_simulation(
         "all_skus": results,
         "operational_alerts": warehouse.operational_alerts(),
         "metric_note": (
-            "at_risk_margin_usd is contribution margin on units projected to stock out "
-            "in the horizon using 48h sales velocity (spike-sensitive). "
-            "recoverable_margin_usd is the portion a PO placed now can still cover "
-            "given supplier lead time. unrecoverable_margin_usd is demand that hits "
-            "before the PO can arrive. This is not list-price 'saved revenue'."
+            "recoverable_margin_usd is the portion a 24h expedite PO placed now "
+            "can still cover inside the horizon. unrecoverable_margin_usd is demand "
+            "that hits before that freight can arrive. Standard supplier lead time "
+            "is still shown per SKU; if it exceeds 48h, po_arrives_after_horizon "
+            "is true (a non-expedite PO cannot save this window). "
+            "This is not list-price 'saved revenue'."
         ),
     }
