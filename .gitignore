@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+data/*.duckdb
+data/*.duckdb.wal
+.mypy_cache/
+.ruff_cache/
+.netlify/
+dist/
+build/
+.streamlit/secrets.toml
