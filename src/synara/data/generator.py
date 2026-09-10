@@ -109,9 +109,10 @@ def build_catalog(rng: random.Random) -> list[CatalogSku]:
         ss = safety_stock(base_v, lead)
         rop = reorder_point(base_v, lead, ss)
         if spiked:
-            # Spike ~5–7x over the last 36h. Stock covers ~30h at the spiked rate.
+            # Spike ~5–7x over the last 36h. Stock covers ~18h at the spiked rate
+            # so a 24h expedite is partly too late (unrecoverable) and partly in time.
             spike_v = base_v * rng.uniform(5.0, 7.0)
-            on_hand = max(8, int(spike_v * (30.0 / 24.0)))
+            on_hand = max(8, int(spike_v * (18.0 / 24.0)))
         elif high:
             on_hand = int(base_v * lead * rng.uniform(1.4, 2.2)) + ss
         else:
