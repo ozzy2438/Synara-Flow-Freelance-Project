@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
-logger = logging.getLogger("synara.simulate")
-
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from synara.application.ingest import last_sale_at
 from synara.domain.revenue import split_revenue
 from synara.infrastructure.duckdb_warehouse import DuckWarehouse
-from synara.infrastructure.orm import InventoryRow, ProductRow, PurchaseOrderRow
+from synara.infrastructure.orm import (
+    InventoryRow,
+    ProductRow,
+    PurchaseOrderRow,
+    get_ops_state,
+)
+
+logger = logging.getLogger("synara.simulate")
+
+SITE = "Main DC — one warehouse. Transfers are not modeled."
+PO_CHANNEL = "CSV + email draft. Not posted to an ERP."
+SCALE = (
+    "Sized for 50–5,000 SKUs on this API box (DuckDB file). "
+    "Not 50k SKUs / 10 sites — that would move OLAP off the request path."
+)
 
 
 def refresh_olap_snapshot(session: Session, warehouse: DuckWarehouse) -> None:
@@ -63,6 +78,31 @@ def refresh_olap_snapshot(session: Session, warehouse: DuckWarehouse) -> None:
             )
 
 
+def _apply_substitution(results: list[dict], products: list[ProductRow], lost_sale_rate: float) -> None:
+    by_sku = {r["sku"]: r for r in results}
+    subs = {p.sku: (p.substitute_sku, p.substitute_capture or 0.0) for p in products}
+    for r in results:
+        alt, cap = subs.get(r["sku"], (None, 0.0))
+        r["substitute_sku"] = alt
+        r["substitute_capture"] = cap or None
+        r["margin_after_substitution_usd"] = r["at_risk_margin_usd"]
+        if not alt or not cap or r["shortfall_units"] <= 0:
+            continue
+        other = by_sku.get(alt)
+        if other is None:
+            continue
+        leftover = other["on_hand"] - other["daily_velocity_48h"] * 2.0 * other["demand_multiplier"]
+        captured = min(r["shortfall_units"] * cap, max(0.0, leftover))
+        r["margin_after_substitution_usd"] = round(
+            max(
+                0.0,
+                r["at_risk_margin_usd"]
+                - captured * r["unit_price"] * r["margin_rate"] * lost_sale_rate,
+            ),
+            2,
+        )
+
+
 def run_simulation(
     session: Session,
     warehouse: DuckWarehouse,
@@ -70,12 +110,16 @@ def run_simulation(
     horizon_hours: int = 48,
     demand_multiplier: float = 1.0,
     lead_time_delta_days: int = 0,
+    lost_sale_rate: float = 1.0,
     now: datetime | None = None,
 ) -> dict:
+    t0 = time.perf_counter()
     now = now or datetime.now(timezone.utc)
+    lost_sale_rate = min(1.0, max(0.0, lost_sale_rate))
     refresh_olap_snapshot(session, warehouse)
     velocity = warehouse.velocity_rows(now)
     inbound = warehouse.inbound_by_sku_hour(now, horizon_hours)
+    products = session.query(ProductRow).all()
     results = []
     for row in velocity:
         lead = max(0, int(row["lead_time_days"]) + lead_time_delta_days)
@@ -93,6 +137,7 @@ def run_simulation(
             demand_multiplier=demand_multiplier,
             lead_time_override_days=lead,
         )
+        ls = lost_sale_rate
         results.append(
             {
                 "sku": row["sku"],
@@ -107,10 +152,10 @@ def run_simulation(
                 "daily_velocity_48h": float(row["daily_velocity_48h"]),
                 "daily_velocity_7d": float(row["daily_velocity_7d"]),
                 "shortfall_units": split.shortfall_units,
-                "at_risk_gross_usd": round(split.at_risk_gross_usd, 2),
-                "at_risk_margin_usd": round(split.at_risk_margin_usd, 2),
-                "recoverable_margin_usd": round(split.recoverable_margin_usd, 2),
-                "unrecoverable_margin_usd": round(split.unrecoverable_margin_usd, 2),
+                "at_risk_gross_usd": round(split.at_risk_gross_usd * ls, 2),
+                "at_risk_margin_usd": round(split.at_risk_margin_usd * ls, 2),
+                "recoverable_margin_usd": round(split.recoverable_margin_usd * ls, 2),
+                "unrecoverable_margin_usd": round(split.unrecoverable_margin_usd * ls, 2),
                 "hours_to_stockout": split.hours_to_stockout,
                 "lead_time_days": split.lead_time_days,
                 "recommended_po_qty": split.recommended_po_qty,
@@ -119,6 +164,7 @@ def run_simulation(
             }
         )
 
+    _apply_substitution(results, products, lost_sale_rate)
     at_risk = [r for r in results if r["shortfall_units"] > 0]
     at_risk.sort(key=lambda r: r["at_risk_margin_usd"], reverse=True)
     run_id = str(uuid.uuid4())
@@ -128,18 +174,37 @@ def run_simulation(
         "at_risk_gross_usd": round(sum(r["at_risk_gross_usd"] for r in at_risk), 2),
         "at_risk_margin_usd": round(sum(r["at_risk_margin_usd"] for r in at_risk), 2),
         "recoverable_margin_usd": round(sum(r["recoverable_margin_usd"] for r in at_risk), 2),
-        "unrecoverable_margin_usd": round(
-            sum(r["unrecoverable_margin_usd"] for r in at_risk), 2
+        "unrecoverable_margin_usd": round(sum(r["unrecoverable_margin_usd"] for r in at_risk), 2),
+        "at_risk_margin_after_substitution_usd": round(
+            sum(r["margin_after_substitution_usd"] for r in at_risk), 2
         ),
+    }
+    ops = get_ops_state(session)
+    sale_at = last_sale_at(session)
+    sku_count = session.execute(select(func.count()).select_from(ProductRow)).scalar_one()
+    holdout = warehouse.holdout_mape(now)
+    compute_ms = int((time.perf_counter() - t0) * 1000)
+    contract = {
+        "mode": ops.mode if ops else "unknown",
+        "source": ops.source_label if ops else "No catalog loaded",
+        "as_of": now.isoformat(),
+        "last_sale_at": sale_at.isoformat() if sale_at else None,
+        "sku_count": int(sku_count),
+        "site": SITE,
+        "lost_sale_rate": lost_sale_rate,
+        "po_channel": PO_CHANNEL,
+        "scale": SCALE,
+        "holdout": holdout,
+        "compute_ms": compute_ms,
     }
     logger.info(
         "simulation_complete at_risk_skus=%s at_risk_margin_usd=%s "
-        "recoverable_margin_usd=%s unrecoverable_margin_usd=%s demand_mult=%s",
+        "recoverable_margin_usd=%s mape_48h=%s compute_ms=%s",
         totals["at_risk_sku_count"],
         totals["at_risk_margin_usd"],
         totals["recoverable_margin_usd"],
-        totals["unrecoverable_margin_usd"],
-        demand_multiplier,
+        holdout.get("mape_48h_velocity"),
+        compute_ms,
     )
     return {
         "run_id": run_id,
@@ -147,16 +212,16 @@ def run_simulation(
         "horizon_hours": horizon_hours,
         "demand_multiplier": demand_multiplier,
         "lead_time_delta_days": lead_time_delta_days,
+        "lost_sale_rate": lost_sale_rate,
+        "operating_contract": contract,
         "totals": totals,
         "at_risk": at_risk,
         "all_skus": results,
         "operational_alerts": warehouse.operational_alerts(),
         "metric_note": (
-            "recoverable_margin_usd is the portion a 24h expedite PO placed now "
-            "can still cover inside the horizon. unrecoverable_margin_usd is demand "
-            "that hits before that freight can arrive. Standard supplier lead time "
-            "is still shown per SKU; if it exceeds 48h, po_arrives_after_horizon "
-            "is true (a non-expedite PO cannot save this window). "
-            "This is not list-price 'saved revenue'."
+            "At-risk figures are contribution margin × lost-sale rate "
+            f"({lost_sale_rate:.0%} assumed lost, rest treated as delay). "
+            "Recoverable assumes 24h expedite freight, not standard supplier lead time. "
+            "Substitution, if set on the catalog, only reduces margin_after_substitution_usd."
         ),
     }

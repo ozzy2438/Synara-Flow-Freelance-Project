@@ -100,9 +100,12 @@ pytest -q
 | --- | --- | --- |
 | POST | `/api/seed` | 50 SKUs, 7 days of orders, injected spikes |
 | POST | `/api/orders` | Decrement stock + outbox in one TX; 409 on oversell |
-| GET | `/api/alerts` | 48h walk + margin split + pending outbox depth |
-| POST | `/api/simulate` | Same walk with demand × and lead-time delta |
-| POST | `/api/replenish` | Persist expedite PO (24h) and re-run via alerts |
+| GET | `/api/alerts` | Walk + `operating_contract` (source, MAPE, site, scale, compute_ms) |
+| POST | `/api/simulate` | Same walk; `lost_sale_rate` scales margin |
+| POST | `/api/replenish` | Persist 24h expedite PO (not an ERP posting) |
+| POST | `/api/replenish/{id}/export` | CSV + email draft; marks `exported_at` |
+| GET | `/api/export` | catalog.csv + sales.csv of the current world |
+| POST | `/api/ingest` | Replace the world from those two CSVs |
 | GET | `/api/health` | Liveness (no API key) |
 
 Mutating routes require `X-API-Key`. This is a demo lock, not a product auth system.
@@ -113,7 +116,11 @@ Mutating routes require `X-API-Key`. This is a demo lock, not a product auth sys
 
 **Why not a plain `alerts` table?** You could. The outbox still earns its keep as the *relay* to an analytical engine that the API process must not share in memory with the UI.
 
-**Forecast.** 48h velocity is used so a 36h spike is not diluted ~7× by a weekly average. This is not a statistical forecast (no MAPE, no seasonality). It is a transparent hourly walk: `stock + inbound − velocity`.
+**Forecast.** 48h velocity so a spike is not washed out by a weekly average. Holdout MAPE on the last 48h is on the operating-contract strip — it is a walk, not a fitted model.
+
+**Source of truth for a small company.** CSV in, CSV/email PO out. The template *is* the current world (`GET /api/export`). There is no ERP connector; pretending otherwise would be the lie.
+
+**Scale.** `compute_ms` is on every alerts payload. The contract says 50–5,000 SKUs, one site. It does not pretend to be a 50k-SKU control tower.
 
 **Money.** Phase-1 catalogs carry margin for a reason. Headline the cockpit with contribution margin. List-price × units is `at_risk_gross_usd` in the JSON for anyone who still wants it.
 

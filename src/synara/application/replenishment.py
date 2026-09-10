@@ -17,6 +17,7 @@ def place_emergency_po(
     sku: str,
     quantity: int | None = None,
     placed_at: datetime | None = None,
+    buyer_email: str = "purchasing@company.example",
 ) -> PurchaseOrderRow:
     placed_at = placed_at or datetime.now(timezone.utc)
     product = session.get(ProductRow, sku)
@@ -51,6 +52,7 @@ def place_emergency_po(
         status="placed",
         placed_at=placed_at,
         expected_arrival=arrival,
+        buyer_email=buyer_email,
     )
     session.add(po)
     inventory.on_order += qty
@@ -72,3 +74,46 @@ def place_emergency_po(
         created_at=placed_at,
     )
     return po
+
+
+def po_number(po: PurchaseOrderRow) -> str:
+    return f"SYN-{po.id.hex[:8].upper()}"
+
+
+def export_po(session: Session, po_id: str) -> dict:
+    try:
+        uid = uuid.UUID(po_id)
+    except ValueError as exc:
+        raise ValueError("invalid po_id") from exc
+    po = session.get(PurchaseOrderRow, uid)
+    if po is None:
+        raise LookupError(po_id)
+    product = session.get(ProductRow, po.sku)
+    po.exported_at = datetime.now(timezone.utc)
+    number = po_number(po)
+    to = po.buyer_email or "purchasing@company.example"
+    csv_body = (
+        "po_number,sku,name,quantity,expected_arrival,channel\n"
+        f"{number},{po.sku},{product.name if product else ''},{po.quantity},"
+        f"{po.expected_arrival.isoformat()},csv_email_not_erp\n"
+    )
+    email = (
+        f"To: {to}\n"
+        f"Subject: Expedite PO {number} — {po.sku} x {po.quantity}\n\n"
+        f"Please expedite {po.quantity} units of {po.sku}"
+        f"{' (' + product.name + ')' if product else ''} for arrival "
+        f"{po.expected_arrival.isoformat()}.\n\n"
+        "This is a purchasing draft from Synara. It has not been posted to an ERP.\n"
+    )
+    return {
+        "po_id": str(po.id),
+        "po_number": number,
+        "sku": po.sku,
+        "quantity": po.quantity,
+        "buyer_email": to,
+        "expected_arrival": po.expected_arrival.isoformat(),
+        "exported_at": po.exported_at.isoformat(),
+        "channel": "csv_email_not_erp",
+        "csv": csv_body,
+        "email": email,
+    }

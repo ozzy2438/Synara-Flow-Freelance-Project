@@ -7,8 +7,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import OperationalError
 
+from synara.application.ingest import dump_csvs, ingest_csvs
 from synara.application.orders import place_order
-from synara.application.replenishment import place_emergency_po
+from synara.application.replenishment import export_po, place_emergency_po, po_number
 from synara.application.seed import seed_world
 from synara.application.simulate import run_simulation
 from synara.config import Settings, get_settings
@@ -40,11 +41,17 @@ class SimulateIn(BaseModel):
     demand_multiplier: float = Field(default=1.0, ge=0.5, le=3.0)
     lead_time_delta_days: int = Field(default=0, ge=-5, le=21)
     horizon_hours: int = Field(default=48, ge=12, le=168)
+    lost_sale_rate: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ReplenishIn(BaseModel):
     sku: str
     quantity: int | None = Field(default=None, gt=0)
+
+
+class IngestIn(BaseModel):
+    catalog_csv: str = Field(min_length=8)
+    sales_csv: str = Field(min_length=8)
 
 
 def _retry(fn, attempts: int = 4):
@@ -130,12 +137,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 horizon_hours=body.horizon_hours,
                 demand_multiplier=body.demand_multiplier,
                 lead_time_delta_days=body.lead_time_delta_days,
+                lost_sale_rate=body.lost_sale_rate,
             )
 
     @app.get("/api/alerts")
     def alerts(
         demand_multiplier: float = 1.0,
         lead_time_delta_days: int = 0,
+        lost_sale_rate: float = 1.0,
         auth: None = Depends(require_key),
     ) -> dict[str, Any]:
         with session_scope(factory) as session:
@@ -144,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 warehouse,
                 demand_multiplier=demand_multiplier,
                 lead_time_delta_days=lead_time_delta_days,
+                lost_sale_rate=lost_sale_rate,
             )
             result["pending_outbox"] = count_pending_outbox(session)
             return result
@@ -152,15 +162,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def replenish(body: ReplenishIn, auth: None = Depends(require_key)) -> dict[str, Any]:
         def attempt() -> dict[str, Any]:
             with session_scope(factory) as session:
-                po = place_emergency_po(session, sku=body.sku, quantity=body.quantity)
+                po = place_emergency_po(
+                    session,
+                    sku=body.sku,
+                    quantity=body.quantity,
+                    buyer_email=settings.buyer_email,
+                )
                 return {
                     "po_id": str(po.id),
+                    "po_number": po_number(po),
                     "sku": po.sku,
                     "quantity": po.quantity,
                     "expected_arrival": po.expected_arrival.isoformat(),
+                    "buyer_email": po.buyer_email,
+                    "channel": "csv_email_not_erp",
                     "note": (
-                        "PO is persisted and on_order increased in the same "
-                        "transaction as the outbox event."
+                        "Persisted in Postgres. Not sent to an ERP. "
+                        "POST /api/replenish/{po_id}/export for CSV + email draft."
                     ),
                 }
 
@@ -168,6 +186,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _retry(attempt)
         except SkuNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/export")
+    def export_world(auth: None = Depends(require_key)) -> dict[str, str]:
+        with session_scope(factory) as session:
+            return dump_csvs(session)
+
+    @app.post("/api/ingest")
+    def ingest(body: IngestIn, auth: None = Depends(require_key)) -> dict[str, Any]:
+        try:
+            with session_scope(factory) as session:
+                return ingest_csvs(
+                    session,
+                    warehouse,
+                    catalog_csv=body.catalog_csv,
+                    sales_csv=body.sales_csv,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/replenish/{po_id}/export")
+    def replenish_export(po_id: str, auth: None = Depends(require_key)) -> dict[str, Any]:
+        try:
+            with session_scope(factory) as session:
+                return export_po(session, po_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Unknown PO") from None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

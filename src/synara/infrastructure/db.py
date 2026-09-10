@@ -18,6 +18,16 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def create_schema(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    # create_all will not add columns to an already-created demo database.
+    alters = (
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS substitute_sku VARCHAR(32)",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS substitute_capture DOUBLE PRECISION",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS exported_at TIMESTAMPTZ",
+        "ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS buyer_email VARCHAR(128)",
+    )
+    with engine.begin() as conn:
+        for stmt in alters:
+            conn.execute(text(stmt))
 
 
 @contextmanager

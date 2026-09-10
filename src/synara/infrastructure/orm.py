@@ -25,6 +25,8 @@ class ProductRow(Base):
     lead_time_days: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     is_high_runner: Mapped[bool] = mapped_column(Boolean, default=False)
+    substitute_sku: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    substitute_capture: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class InventoryRow(Base):
@@ -61,6 +63,18 @@ class PurchaseOrderRow(Base):
     placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expected_arrival: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    buyer_email: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class OpsState(Base):
+    """Single-row operating contract: where the world came from."""
+
+    __tablename__ = "ops_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="synthetic")
+    source_label: Mapped[str] = mapped_column(String(256), nullable=False)
 
 
 class OutboxEventRow(Base):
@@ -122,6 +136,22 @@ def wipe_oltp(session: Session) -> None:
     session.execute(delete(PurchaseOrderRow))
     session.execute(delete(InventoryRow))
     session.execute(delete(ProductRow))
+    session.execute(delete(OpsState))
+
+
+def set_ops_state(session: Session, *, mode: str, source_label: str) -> OpsState:
+    row = session.get(OpsState, 1)
+    if row is None:
+        row = OpsState(id=1, mode=mode, source_label=source_label)
+        session.add(row)
+    else:
+        row.mode = mode
+        row.source_label = source_label
+    return row
+
+
+def get_ops_state(session: Session) -> OpsState | None:
+    return session.get(OpsState, 1)
 
 
 def count_pending_outbox(session: Session) -> int:

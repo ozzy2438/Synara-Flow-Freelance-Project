@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
     log_level: str = "INFO"
     seed: int = 42
+    buyer_email: str = "purchasing@company.example"
     outbox_batch_size: int = 25
     outbox_max_attempts: int = 8
     simulation_horizon_hours: int = 48

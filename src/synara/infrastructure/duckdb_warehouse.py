@@ -301,6 +301,52 @@ class DuckWarehouse:
             ]
             return [dict(zip(cols, row)) for row in result]
 
+    def holdout_mape(self, now: datetime) -> dict[str, float | int | None]:
+        """Score the 48h walk against the last 48h of actual sales.
+
+        Train on (now-96h, now-48h] vs naive 7d ending at now-48h.
+        Actual is (now-48h, now]. SKUs with no actual sales are skipped.
+        """
+        from datetime import timedelta
+
+        t48 = now - timedelta(hours=48)
+        t96 = now - timedelta(hours=96)
+        t7 = t48 - timedelta(days=7)
+        with self._connect() as con:
+            row = con.execute(
+                """
+                WITH agg AS (
+                    SELECT
+                        sku,
+                        SUM(CASE WHEN created_at >= ? AND created_at < ? THEN quantity ELSE 0 END) / 2.0
+                            AS v48,
+                        SUM(CASE WHEN created_at >= ? AND created_at < ? THEN quantity ELSE 0 END) / 7.0
+                            AS v7,
+                        SUM(CASE WHEN created_at >= ? THEN quantity ELSE 0 END) AS actual
+                    FROM fact_orders
+                    WHERE created_at >= ?
+                    GROUP BY sku
+                )
+                SELECT
+                    AVG(CASE WHEN actual > 0 THEN abs(v48 * 2.0 - actual) / actual END),
+                    AVG(CASE WHEN actual > 0 THEN abs(v7 * 2.0 - actual) / actual END),
+                    COUNT(*) FILTER (WHERE actual > 0)
+                FROM agg
+                """,
+                [t96, t48, t7, t48, t48, t7],
+            ).fetchone()
+        mape_48, mape_7, n = row if row else (None, None, 0)
+        n = int(n or 0)
+        return {
+            "mape_48h_velocity": round(float(mape_48), 3) if mape_48 is not None else None,
+            "mape_7d_naive": round(float(mape_7), 3) if mape_7 is not None else None,
+            "n_skus": n,
+            "note": (
+                "Holdout: last 48h actual vs a walk trained on the prior 48h. "
+                "Not a fitted model. Prior stockouts censor demand, so MAPE is a floor."
+            ),
+        }
+
     def inbound_by_sku_hour(
         self, now: datetime, horizon_hours: int
     ) -> dict[str, dict[int, float]]:
